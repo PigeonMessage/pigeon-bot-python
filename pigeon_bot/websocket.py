@@ -76,6 +76,7 @@ class WebSocketClient:
         self.events = EventManager()
         self._reconnect_task: Optional[asyncio.Task] = None
         self._pending_requests: Dict[str, asyncio.Future] = {}
+        self._client = None
 
     @property
     def connected(self) -> bool:
@@ -108,10 +109,14 @@ class WebSocketClient:
                 
                 await self._listen()
                 
-            except (ConnectionClosed, ConnectionRefusedError, OSError) as e:
+            except (ConnectionClosed, ConnectionRefusedError, OSError, Exception) as e:
                 self._connected = False
                 self._authenticated = False
-                self.events.emit("disconnect", e)
+                
+                if isinstance(e, (ConnectionClosed, ConnectionRefusedError, OSError)):
+                    self.events.emit("disconnect", e)
+                else:
+                    self.events.emit("error", f"Connection failed: {e}")
                 
                 for request_id, future in self._pending_requests.items():
                     if not future.done():
@@ -160,11 +165,15 @@ class WebSocketClient:
             msg_data["attachments"] = [
                 MessageAttachment(**attachment) for attachment in msg_data["attachments"]
             ]
+        else:
+            msg_data["attachments"] = None
         
         if msg_data.get("reactions"):
             msg_data["reactions"] = [
                 MessageReaction(**reaction) for reaction in msg_data["reactions"]
             ]
+        else:
+            msg_data["reactions"] = None
         
         return Message(**msg_data)
 
@@ -187,12 +196,22 @@ class WebSocketClient:
         elif envelope.type == "new_message":
             message_data = envelope.data.get("message", {})
             message = self._deserialize_message_data(message_data)
-            self.events.emit("new_message", message, envelope.data)
+            if self._client:
+                from .entities import MessageEntity
+                message_entity = MessageEntity(self._client, message)
+                self.events.emit("new_message", message_entity)
+            else:
+                self.events.emit("new_message", message, envelope.data)
             
         elif envelope.type == "message_edited":
             message_data = envelope.data.get("message", {})
             message = self._deserialize_message_data(message_data)
-            self.events.emit("message_edited", message, envelope.data)
+            if self._client:
+                from .entities import MessageEntity
+                message_entity = MessageEntity(self._client, message)
+                self.events.emit("message_edited", message_entity)
+            else:
+                self.events.emit("message_edited", message, envelope.data)
             
         elif envelope.type == "message_deleted":
             self.events.emit("message_deleted", envelope.data)

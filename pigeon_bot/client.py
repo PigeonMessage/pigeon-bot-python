@@ -25,7 +25,7 @@ class PigeonClient:
         self.config = config
         self.http = HttpClient(config)
         self.ws = WebSocketClient(config)
-        self._wrappers_setup = False
+        self.ws._client = self
         self._closed = False
 
     async def __aenter__(self):
@@ -171,29 +171,8 @@ class PigeonClient:
                 chat_data = ChatPreviewType(**chat_data)
         return ChatEntity(self, chat_data)
 
-    # ========== ENHANCED EVENT HANDLING ==========
-    async def _setup_message_entity_wrapping(self):
-        """Set up automatic wrapping of message data in MessageEntity."""
-        if self._wrappers_setup:
-            return
-
-        async def message_wrapper(message_data, raw_data):
-            message_entity = self.create_message_entity(message_data)
-            self.ws.events.emit("new_message_entity", message_entity, raw_data)
-
-        self.ws.events.on("new_message")(message_wrapper)
-
-        async def edited_message_wrapper(message_data, raw_data):
-            message_entity = self.create_message_entity(message_data)
-            self.ws.events.emit("message_edited_entity", message_entity, raw_data)
-
-        self.ws.events.on("message_edited")(edited_message_wrapper)
-        
-        self._wrappers_setup = True
-
     async def start(self) -> None:
-        """Start the client and set up enhanced features."""
-        await self._setup_message_entity_wrapping()
+        """Start the client and connect."""
         await self.connect()
 
     async def close(self) -> None:

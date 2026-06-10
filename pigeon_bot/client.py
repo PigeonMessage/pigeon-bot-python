@@ -10,7 +10,7 @@ from .types import (
     ChatMember,
     ChatPreview,
     Message,
-    MessageAttachment,
+    MessageMedia,
 )
 from .entities import MessageEntity, UserEntity, ChatEntity
 
@@ -21,7 +21,6 @@ class PigeonClient:
     def __init__(self, config: ClientConfig):
         if not config.token:
             raise ValueError("Bot token is required")
-
         self.config = config
         self.http = HttpClient(config)
         self.ws = WebSocketClient(config)
@@ -66,17 +65,36 @@ class PigeonClient:
         """Get members of a chat."""
         return await self.http.get_chat_members(chat_id)
 
+    async def update_member_permissions(
+        self,
+        chat_id: int,
+        user_id: int,
+        *,
+        role: Optional[str] = None,
+        can_send_messages: Optional[bool] = None,
+        can_manage_messages: Optional[bool] = None,
+        can_manage_members: Optional[bool] = None,
+        can_manage_chat: Optional[bool] = None,
+    ) -> None:
+        """Update permissions of a member."""
+        await self.http.update_member_permissions(
+            chat_id, user_id,
+            role=role,
+            can_send_messages=can_send_messages,
+            can_manage_messages=can_manage_messages,
+            can_manage_members=can_manage_members,
+            can_manage_chat=can_manage_chat,
+        )
+
     async def get_messages(
         self, chat_id: int, query: Optional[GetMessagesQuery] = None
     ) -> List[Message]:
         """Get messages from a chat."""
         return await self.http.get_messages(chat_id, query)
 
-    async def upload_attachment(
-        self, chat_id: int, form_data
-    ) -> MessageAttachment:
-        """Upload an attachment to a chat."""
-        return await self.http.upload_attachment(chat_id, form_data)
+    async def upload_media(self, chat_id: int, form_data) -> MessageMedia:
+        """Upload a media to a chat."""
+        return await self.http.upload_media(chat_id, form_data)
 
     async def remove_member(self, chat_id: int, user_id: int) -> None:
         """Remove a member from a chat."""
@@ -96,10 +114,10 @@ class PigeonClient:
         chat_id: int,
         content: str,
         reply_to: Optional[int] = None,
-        attachment_ids: Optional[List[int]] = None,
+        media: Optional[List[MessageMedia]] = None,
     ) -> None:
         """Send a message."""
-        await self.ws.send_message(chat_id, content, reply_to, attachment_ids)
+        await self.ws.send_message(chat_id, content, reply_to, media)
 
     async def edit_message(self, message_id: int, content: str) -> None:
         """Edit a message."""
@@ -156,19 +174,16 @@ class PigeonClient:
     def create_user_entity(self, user_data: Union[UserPublic, Dict[str, Any]]) -> UserEntity:
         """Create a UserEntity from user data."""
         if isinstance(user_data, dict):
-            from .types import UserPublic as UserPublicType
-            user_data = UserPublicType(**user_data)
+            user_data = UserPublic(**user_data)
         return UserEntity(self, user_data)
 
     def create_chat_entity(self, chat_data: Union[Chat, ChatPreview, Dict[str, Any]]) -> ChatEntity:
         """Create a ChatEntity from chat data."""
         if isinstance(chat_data, dict):
             if "members" in chat_data:
-                from .types import Chat as ChatType
-                chat_data = ChatType(**chat_data)
+                chat_data = Chat(**chat_data)
             else:
-                from .types import ChatPreview as ChatPreviewType
-                chat_data = ChatPreviewType(**chat_data)
+                chat_data = ChatPreview(**chat_data)
         return ChatEntity(self, chat_data)
 
     async def start(self) -> None:
@@ -179,15 +194,12 @@ class PigeonClient:
         """Close the client and clean up resources."""
         if self._closed:
             return
-            
         try:
             await self.disconnect()
         except Exception:
             pass
-        
         try:
             await self.http.close()
         except Exception:
             pass
-        
         self._closed = True

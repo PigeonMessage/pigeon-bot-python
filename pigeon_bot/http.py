@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlencode
 
 import aiohttp
@@ -11,7 +11,7 @@ from .types import (
     ChatMember,
     ChatPreview,
     Message,
-    MessageAttachment,
+    MessageMedia,
     MessageReaction,
 )
 from .config import ClientConfig, resolve_api_url
@@ -52,7 +52,6 @@ class HttpClient:
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
-
     async def _request(
         self,
         method: str,
@@ -63,13 +62,11 @@ class HttpClient:
         """Make an HTTP request to the API."""
         await self._ensure_session()
         url = resolve_api_url(self.config, path)
-        
         if params:
-            query_string = urlencode({k: v for k, v in params.items() if v is not None})
-            url = f"{url}?{query_string}"
+            qs = urlencode({k: v for k, v in params.items() if v is not None})
+            url = f"{url}?{qs}"
 
         headers = {"Content-Type": "application/json", **self._auth_headers()}
-
         async with self._session.request(
             method,
             url,
@@ -78,17 +75,29 @@ class HttpClient:
         ) as response:
             if response.status == 204:
                 return None
+            resp_json = await response.json()
 
-            response_data = await response.json()
-            api_response = ApiResponse(**response_data)
+            error_msg = None
+            if "error" in resp_json:
+                err = resp_json["error"]
+                if isinstance(err, dict):
+                    error_msg = err.get("message", str(err))
+                elif isinstance(err, str):
+                    error_msg = err
+                else:
+                    error_msg = str(err)
 
-            if api_response.error:
-                raise Exception(api_response.error.message or "Request failed")
+            if error_msg:
+                raise Exception(error_msg)
+
+            if resp_json.get("success") is False:
+                msg = resp_json.get("message", "Request failed")
+                raise Exception(msg)
 
             if not response.ok:
                 raise Exception(f"HTTP {response.status}: {response.reason}")
 
-            return api_response.data
+            return resp_json.get("data")
 
     # ========== USERS ==========
     async def get_user(self, id: int) -> UserPublic:
@@ -106,63 +115,96 @@ class HttpClient:
         """Get chat by ID."""
         data = await self._request("GET", f"/chats/{id}")
         if data.get("members"):
-            data["members"] = [ChatMember(**member) for member in data["members"]]
+            data["members"] = [ChatMember(**m) for m in data["members"]]
         return Chat(**data)
 
-    async def get_my_chats(self) -> List[ChatPreview]:
-        """Get all chats for the current user."""
-        data = await self._request("GET", "/chats")
-        chats = []
-        for chat in data:
-            chat_data = dict(chat)
-            
-            if chat_data.get("last_message"):
-                chat_data["last_message"] = self._deserialize_message(chat_data["last_message"])
-            
-            if chat_data.get("last_user"):
-                chat_data["last_user"] = UserPublic(**chat_data["last_user"])
-            
-            if chat_data.get("other_user"):
-                chat_data["other_user"] = UserPublic(**chat_data["other_user"])
-            
-            chats.append(ChatPreview(**chat_data))
-        return chats
-
     async def get_chat_members(self, chat_id: int) -> List[ChatMember]:
-        """Get members of a chat."""
         data = await self._request("GET", f"/chats/{chat_id}/members")
-        return [ChatMember(**member) for member in data]
+        return [ChatMember(**m) for m in data]
+
+    async def update_member_permissions(
+        self,
+        chat_id: int,
+        user_id: int,
+        *,
+        role: Optional[str] = None,
+        can_send_messages: Optional[bool] = None,
+        can_manage_messages: Optional[bool] = None,
+        can_manage_members: Optional[bool] = None,
+        can_manage_chat: Optional[bool] = None,
+    ) -> None:
+        """Update permissions of a member."""
+        body = {}
+        if role is not None:
+            body["role"] = role
+        if can_send_messages is not None:
+            body["can_send_messages"] = can_send_messages
+        if can_manage_messages is not None:
+            body["can_manage_messages"] = can_manage_messages
+        if can_manage_members is not None:
+            body["can_manage_members"] = can_manage_members
+        if can_manage_chat is not None:
+            body["can_manage_chat"] = can_manage_chat
+        await self._request("PUT", f"/chats/{chat_id}/members/{user_id}", body=body)
 
     async def remove_member(self, chat_id: int, user_id: int) -> None:
-        """Remove a member from a chat."""
+        """Remove member from the chat."""
         await self._request("DELETE", f"/chats/{chat_id}/members/{user_id}")
 
     # ========== MESSAGES ==========
-    def _deserialize_message(self, message_dict: Dict[str, Any]) -> Message:
-        """Deserialize a message dictionary to Message object."""
-        msg_data = dict(message_dict)
-        
-        if msg_data.get("attachments"):
-            msg_data["attachments"] = [
-                MessageAttachment(**attachment) for attachment in msg_data["attachments"]
-            ]
-        
-        if msg_data.get("reactions"):
-            msg_data["reactions"] = [
-                MessageReaction(**reaction) for reaction in msg_data["reactions"]
-            ]
-        
-        return Message(**msg_data)
+    def _deserialize_media(self, media_dict: Dict[str, Any]) -> MessageMedia:
+        """Convert media dict to corresponding dataclass based on 'type' field."""
+        t = media_dict.get("type")
+        if t == "Photo":
+            return PhotoMedia(**media_dict)
+        elif t == "Document":
+            return DocumentMedia(**media_dict)
+        elif t == "Video":
+            return VideoMedia(**media_dict)
+        elif t == "Audio":
+            return AudioMedia(**media_dict)
+        elif t == "Voice":
+            return VoiceMedia(**media_dict)
+        elif t == "Gif":
+            return GifMedia(**media_dict)
+        elif t == "Sticker":
+            return StickerMedia(**media_dict)
+        elif t == "Geo":
+            return GeoMedia(**media_dict)
+        elif t == "Contact":
+            return ContactMedia(**media_dict)
+        elif t == "Poll":
+            if "options" in media_dict:
+                opts = media_dict["options"]
+                if isinstance(opts, list):
+                    media_dict["options"] = [PollOption(**opt) if isinstance(opt, dict) else opt for opt in opts]
+            return PollMedia(**media_dict)
+        else:
+            return media_dict
+
+    def _deserialize_message(self, msg_dict: Dict[str, Any]) -> Message:
+        md = dict(msg_dict)
+        if md.get("media"):
+            media_list = md["media"]
+            if isinstance(media_list, list):
+                md["media"] = [self._deserialize_media(m) for m in media_list]
+        if md.get("reactions"):
+            md["reactions"] = [MessageReaction(**r) for r in md["reactions"]]
+        if md.get("new_chat_members"):
+            md["new_chat_members"] = [UserPublic(**u) for u in md["new_chat_members"]]
+        if md.get("left_chat_member"):
+            md["left_chat_member"] = UserPublic(**md["left_chat_member"])
+        if md.get("pinned_message"):
+            md["pinned_message"] = self._deserialize_message(md["pinned_message"])
+        return Message(**md)
 
     async def get_messages(
         self, chat_id: int, query: Optional[GetMessagesQuery] = None
     ) -> List[Message]:
         """Get messages from a chat."""
         await self._ensure_session()
-        
         if query is None:
             query = GetMessagesQuery()
-
         params = {}
         if query.limit is not None:
             params["limit"] = query.limit
@@ -172,40 +214,27 @@ class HttpClient:
             params["after_id"] = query.after_id
 
         url = resolve_api_url(self.config, f"/chats/{chat_id}/messages")
-        
-        async with self._session.get(
-            url, headers=self._auth_headers(), params=params
-        ) as response:
-            response_data = await response.json()
-            api_response = ApiResponse(**response_data)
-
-            if api_response.error:
-                raise Exception(api_response.error.message or "Request failed")
-            if not response.ok:
-                raise Exception(f"HTTP {response.status}: {response.reason}")
-
+        async with self._session.get(url, headers=self._auth_headers(), params=params) as resp:
+            resp_json = await resp.json()
+            api_resp = ApiResponse(**resp_json)
+            if api_resp.error:
+                raise Exception(api_resp.error.message or "Request failed")
+            if not resp.ok:
+                raise Exception(f"HTTP {resp.status}: {resp.reason}")
             messages = []
-            for msg in (api_response.data or []):
-                messages.append(self._deserialize_message(msg))
+            for m in (api_resp.data or []):
+                messages.append(self._deserialize_message(m))
             return messages
 
-    # ========== ATTACHMENTS ==========
-    async def upload_attachment(
-        self, chat_id: int, form_data: aiohttp.FormData
-    ) -> MessageAttachment:
-        """Upload an attachment to a chat."""
+    async def upload_media(self, chat_id: int, form_data: aiohttp.FormData) -> MessageMedia:
+        """Upload media to the chat."""
         await self._ensure_session()
-        url = resolve_api_url(self.config, f"/chats/{chat_id}/attachments")
-
-        async with self._session.post(
-            url, headers=self._auth_headers(), data=form_data
-        ) as response:
-            response_data = await response.json()
-            api_response = ApiResponse(**response_data)
-
-            if api_response.error:
-                raise Exception(api_response.error.message or "Upload failed")
-            if not response.ok:
-                raise Exception(f"HTTP {response.status}: {response.reason}")
-
-            return MessageAttachment(**api_response.data)
+        url = resolve_api_url(self.config, f"/chats/{chat_id}/upload")
+        async with self._session.post(url, headers=self._auth_headers(), data=form_data) as resp:
+            resp_json = await resp.json()
+            api_resp = ApiResponse(**resp_json)
+            if api_resp.error:
+                raise Exception(api_resp.error.message or "Upload failed")
+            if not resp.ok:
+                raise Exception(f"HTTP {resp.status}: {resp.reason}")
+            return api_resp.data

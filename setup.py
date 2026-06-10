@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="pigeon-bot",
-    version="0.1.1",
+    version="0.2.0",
     author="BenimFurka",
     description="A Python library for interacting with Pigeon Messenger",
     long_description=long_description,

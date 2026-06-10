@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Any, Union, Literal
 from enum import Enum
 
@@ -13,6 +13,7 @@ class ApiError:
 class ApiResponse:
     data: Optional[Any] = None
     error: Optional[ApiError] = None
+    success: Optional[bool] = None 
 
 
 @dataclass
@@ -76,20 +77,142 @@ class ChatPreview:
 
 
 @dataclass
-class MessageAttachment:
-    id: int
-    chat_id: int
-    uploaded_by: int
-    file_type: str
-    file_url: str
-    file_name: str
-    file_size: int
-    mime_type: str
-    thumbnail_url: Optional[str]
-    width: Optional[int]
-    height: Optional[int]
-    duration: Optional[int]
-    created_at: str
+class PhotoMedia:
+    type: Literal["Photo"] = "Photo"
+    file_id: str = ""
+    file_url: str = ""
+    width: int = 0
+    height: int = 0
+    file_size: int = 0
+    thumbnail_url: Optional[str] = None
+    spoiler: bool = False
+
+
+@dataclass
+class DocumentMedia:
+    type: Literal["Document"] = "Document"
+    file_id: str = ""
+    file_url: str = ""
+    file_name: str = ""
+    mime_type: str = ""
+    file_size: int = 0
+    thumbnail_url: Optional[str] = None
+
+
+@dataclass
+class VideoMedia:
+    type: Literal["Video"] = "Video"
+    file_id: str = ""
+    file_url: str = ""
+    width: int = 0
+    height: int = 0
+    duration: Optional[float] = None
+    file_size: int = 0
+    thumbnail_url: Optional[str] = None
+    supports_streaming: bool = True
+
+
+@dataclass
+class AudioMedia:
+    type: Literal["Audio"] = "Audio"
+    file_id: str = ""
+    file_url: str = ""
+    duration: Optional[float] = None
+    file_name: Optional[str] = None
+    mime_type: str = ""
+    file_size: int = 0
+    thumbnail_url: Optional[str] = None
+
+
+@dataclass
+class VoiceMedia:
+    type: Literal["Voice"] = "Voice"
+    file_id: str = ""
+    file_url: str = ""
+    duration: Optional[float] = None
+    file_size: int = 0
+    waveform: Optional[List[int]] = None
+
+
+@dataclass
+class GifMedia:
+    type: Literal["Gif"] = "Gif"
+    file_id: str = ""
+    file_url: str = ""
+    width: int = 0
+    height: int = 0
+    duration: Optional[float] = None
+    file_size: int = 0
+    preview_url: Optional[str] = None
+
+
+@dataclass
+class StickerMedia:
+    type: Literal["Sticker"] = "Sticker"
+    file_id: str = ""
+    file_url: str = ""
+    width: int = 0
+    height: int = 0
+    emoji: Optional[str] = None
+    set_name: Optional[str] = None
+
+
+@dataclass
+class GeoMedia:
+    type: Literal["Geo"] = "Geo"
+    latitude: float = 0.0
+    longitude: float = 0.0
+    title: Optional[str] = None
+    address: Optional[str] = None
+
+
+@dataclass
+class ContactMedia:
+    type: Literal["Contact"] = "Contact"
+    phone_number: str = ""
+    first_name: str = ""
+    last_name: Optional[str] = None
+    vcard: Optional[str] = None
+
+
+@dataclass
+class PollOption:
+    text: str
+    id: Optional[int] = None
+    poll_id: Optional[int] = None
+    is_correct: Optional[bool] = None
+    votes_count: Optional[int] = None
+    voters: Optional[List[UserPublic]] = None
+
+
+@dataclass
+class PollMedia:
+    type: Literal["Poll"] = "Poll"
+    question: str = ""
+    options: List[PollOption] = field(default_factory=list)
+    allows_multiple: bool = False
+    anonymous: bool = True
+    is_quiz: bool = False
+    has_voted: Optional[bool] = None
+    user_voted_options: Optional[List[int]] = None
+    explanation: Optional[str] = None
+    close_period: Optional[int] = None
+    correct_option_indexes: Optional[List[int]] = None
+    allow_revote: bool = True
+
+
+MessageMedia = Union[
+    PhotoMedia,
+    DocumentMedia,
+    VideoMedia,
+    AudioMedia,
+    VoiceMedia,
+    GifMedia,
+    StickerMedia,
+    GeoMedia,
+    ContactMedia,
+    PollMedia,
+]
 
 
 @dataclass
@@ -108,11 +231,20 @@ class Message:
     sender_id: int
     reply_to_message_id: Optional[int]
     content: str
-    is_edited: bool
-    created_at: str
-    edited_at: Optional[str]
-    attachments: Optional[List[MessageAttachment]]
-    reactions: Optional[List[MessageReaction]]
+    media: Optional[List[MessageMedia]] = None
+    is_edited: bool = False
+    created_at: str = ""
+    edited_at: Optional[str] = None
+    reactions: Optional[List[MessageReaction]] = None
+    new_chat_members: Optional[List[UserPublic]] = None
+    left_chat_member: Optional[UserPublic] = None
+    left_chat_member_id: Optional[int] = None
+    new_chat_title: Optional[str] = None
+    delete_chat_photo: Optional[bool] = None
+    chat_created_type: Optional[str] = None
+    migrate_to_chat_id: Optional[int] = None
+    migrate_from_chat_id: Optional[int] = None
+    pinned_message: Optional["Message"] = None
 
 
 WsMessageType = Literal[
@@ -126,6 +258,8 @@ WsMessageType = Literal[
     "delete_message",
     "add_reaction",
     "remove_reaction",
+    "vote_poll",
+    "unvote_poll",
     "mark_as_read",
     "mark_all_as_read",
     "typing",

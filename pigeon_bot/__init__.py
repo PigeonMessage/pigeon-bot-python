@@ -4,7 +4,7 @@ from .config import *
 from .http import *
 from .entities import *
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __all__ = [
     "Client",
     "ApiError",
@@ -14,7 +14,18 @@ __all__ = [
     "ChatMember",
     "Chat",
     "ChatPreview",
-    "MessageAttachment",
+    "MessageMedia",
+    "PhotoMedia",
+    "DocumentMedia",
+    "VideoMedia",
+    "AudioMedia",
+    "VoiceMedia",
+    "GifMedia",
+    "StickerMedia",
+    "GeoMedia",
+    "ContactMedia",
+    "PollMedia",
+    "PollOption",
     "MessageReaction",
     "Message",
     "WsMessageType",

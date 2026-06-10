@@ -1,7 +1,7 @@
 import asyncio
 import json
 import uuid
-from typing import Dict, Callable, Any, List, Optional
+from typing import Dict, Callable, Any, List, Optional, Union
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -11,8 +11,9 @@ from .types import (
     WsErrorData,
     WsOnlineListData,
     Message,
-    MessageAttachment,
+    MessageMedia,
     MessageReaction,
+    UserPublic,
 )
 from .config import ClientConfig, resolve_ws_url
 
@@ -70,7 +71,7 @@ class WebSocketClient:
 
     def __init__(self, config: ClientConfig):
         self.config = config
-        self.websocket: Optional[websockets.WebSocketServerProtocol] = None
+        self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self._connected = False
         self._authenticated = False
         self.events = EventManager()
@@ -92,7 +93,6 @@ class WebSocketClient:
         """Connect to the WebSocket server."""
         if self._connected:
             raise Exception("Client is already connected")
-
         url = resolve_ws_url(self.config)
         await self._connect_with_retry(url)
 
@@ -104,25 +104,16 @@ class WebSocketClient:
                 self._connected = True
                 self._authenticated = False
                 self.events.emit("connect")
-                
                 await self._authenticate()
-                
                 await self._listen()
-                
-            except (ConnectionClosed, ConnectionRefusedError, OSError, Exception) as e:
+            except (ConnectionClosed, ConnectionRefusedError, OSError) as e:
                 self._connected = False
                 self._authenticated = False
-                
-                if isinstance(e, (ConnectionClosed, ConnectionRefusedError, OSError)):
-                    self.events.emit("disconnect", e)
-                else:
-                    self.events.emit("error", f"Connection failed: {e}")
-                
-                for request_id, future in self._pending_requests.items():
-                    if not future.done():
-                        future.set_exception(Exception(f"Connection lost: {e}"))
+                self.events.emit("disconnect", e)
+                for req_id, fut in self._pending_requests.items():
+                    if not fut.done():
+                        fut.set_exception(Exception(f"Connection lost: {e}"))
                 self._pending_requests.clear()
-                
                 if self.config.auto_reconnect:
                     await asyncio.sleep(self.config.reconnect_interval_ms / 1000)
                     continue
@@ -134,11 +125,8 @@ class WebSocketClient:
 
     async def _authenticate(self):
         """Send authentication message."""
-        auth_msg = WsEnvelope(
-            type="authenticate",
-            data={"token": f"Bot {self.config.token}"}
-        )
-        await self._send_raw(auth_msg)
+        msg = WsEnvelope(type="authenticate", data={"token": f"Bot {self.config.token}"})
+        await self._send_raw(msg)
 
     async def _listen(self):
         """Listen for incoming messages."""
@@ -146,8 +134,8 @@ class WebSocketClient:
             async for message in self.websocket:
                 try:
                     data = json.loads(message)
-                    envelope = WsEnvelope(**data)
-                    await self._handle_message(envelope)
+                    env = WsEnvelope(**data)
+                    await self._handle_message(env)
                 except json.JSONDecodeError as e:
                     self.events.emit("error", f"Invalid JSON: {e}")
                 except Exception as e:
@@ -157,145 +145,111 @@ class WebSocketClient:
         except Exception as e:
             self.events.emit("error", f"Listen error: {e}")
 
-    def _deserialize_message_data(self, message_data: Dict[str, Any]) -> Message:
+    def _deserialize_message(self, msg_dict: dict) -> Message:
         """Deserialize message data dictionary to Message object."""
-        msg_data = dict(message_data)
-        
-        if msg_data.get("attachments"):
-            msg_data["attachments"] = [
-                MessageAttachment(**attachment) for attachment in msg_data["attachments"]
-            ]
-        else:
-            msg_data["attachments"] = None
-        
-        if msg_data.get("reactions"):
-            msg_data["reactions"] = [
-                MessageReaction(**reaction) for reaction in msg_data["reactions"]
-            ]
-        else:
-            msg_data["reactions"] = None
-        
-        return Message(**msg_data)
-
-    async def _handle_message(self, envelope: WsEnvelope):
         """Handle incoming WebSocket messages."""
-        self.events.emit("raw", envelope)
+        md = dict(msg_dict)
+        if md.get("media"):
+            pass
+        if md.get("reactions"):
+            md["reactions"] = [MessageReaction(**r) for r in md["reactions"]]
+        if md.get("new_chat_members"):
+            md["new_chat_members"] = [UserPublic(**u) for u in md["new_chat_members"]]
+        if md.get("left_chat_member"):
+            md["left_chat_member"] = UserPublic(**md["left_chat_member"])
+        if md.get("pinned_message"):
+            md["pinned_message"] = self._deserialize_message(md["pinned_message"])
+        return Message(**md)
 
-        if envelope.type == "authenticated":
+    async def _handle_message(self, env: WsEnvelope):
+        self.events.emit("raw", env)
+        if env.type == "authenticated":
             self._authenticated = True
-            auth_data = WsAuthenticatedData(**envelope.data)
-            self.events.emit("authenticated", auth_data)
+            data = WsAuthenticatedData(**env.data)
+            self.events.emit("authenticated", data)
             self.events.emit("ready")
-            
-        elif envelope.type == "error":
-            error_data = WsErrorData(**envelope.data)
-            if not self._authenticated and error_data.message == "Please authenticate first":
+        elif env.type == "error":
+            err = WsErrorData(**env.data)
+            if not self._authenticated and err.message == "Please authenticate first":
                 return
-            self.events.emit("error", Exception(error_data.message))
-            
-        elif envelope.type == "new_message":
-            message_data = envelope.data.get("message", {})
-            message = self._deserialize_message_data(message_data)
+            self.events.emit("error", Exception(err.message))
+        elif env.type in ("new_message", "message_edited"):
+            msg_data = env.data.get("message", {})
+            msg = self._deserialize_message(msg_data)
             if self._client:
                 from .entities import MessageEntity
-                message_entity = MessageEntity(self._client, message)
-                self.events.emit("new_message", message_entity)
+                entity = MessageEntity(self._client, msg)
+                self.events.emit(env.type, entity)
             else:
-                self.events.emit("new_message", message, envelope.data)
-            
-        elif envelope.type == "message_edited":
-            message_data = envelope.data.get("message", {})
-            message = self._deserialize_message_data(message_data)
-            if self._client:
-                from .entities import MessageEntity
-                message_entity = MessageEntity(self._client, message)
-                self.events.emit("message_edited", message_entity)
-            else:
-                self.events.emit("message_edited", message, envelope.data)
-            
-        elif envelope.type == "message_deleted":
-            self.events.emit("message_deleted", envelope.data)
-            
-        elif envelope.type in ["reaction_added", "reaction_removed"]:
-            self.events.emit(envelope.type, envelope.data)
-            
-        elif envelope.type in ["user_online", "user_offline"]:
-            self.events.emit(envelope.type, envelope.data)
-            
-        elif envelope.type == "online_list":
-            online_data = WsOnlineListData(**envelope.data)
+                self.events.emit(env.type, msg, env.data)
+        elif env.type == "message_deleted":
+            self.events.emit("message_deleted", env.data)
+        elif env.type == "reaction_added":
+            reaction = env.data.get("reaction", {})
+            unified_data = {
+                "message_id": reaction.get("message_id") or env.data.get("message_id"),
+                "user_id": reaction.get("user_id"),
+                "emoji": reaction.get("emoji"),
+                "reaction_id": reaction.get("id"),
+                "created_at": reaction.get("created_at"),
+            }
+            self.events.emit("reaction_added", unified_data)
+        elif env.type == "reaction_removed":
+            self.events.emit("reaction_removed", env.data)
+        elif env.type in ("user_online", "user_offline", "user_typing"):
+            self.events.emit(env.type, env.data)
+        elif env.type == "online_list":
+            online_data = WsOnlineListData(**env.data)
             self.events.emit("online_list", online_data)
-            
-            request_id = envelope.data.get("request_id")
-            if request_id and request_id in self._pending_requests:
-                future = self._pending_requests.pop(request_id)
-                if not future.done():
-                    future.set_result(online_data.users)
-            
+            req_id = env.data.get("request_id")
+            if req_id and req_id in self._pending_requests:
+                fut = self._pending_requests.pop(req_id)
+                if not fut.done():
+                    fut.set_result(online_data.users)
+        elif env.type in ("poll_voted", "poll_closed", "poll_created"):
+            self.events.emit(env.type, env.data)
         else:
-            self.events.emit(envelope.type, envelope.data)
+            self.events.emit(env.type, env.data)
 
     async def _send_raw(self, envelope: WsEnvelope):
         """Send a raw WebSocket message."""
         if not self.websocket:
             raise Exception("Not connected to WebSocket")
-        
         if not self._authenticated and envelope.type != "authenticate":
             raise Exception("Please authenticate first.")
-        
-        message = json.dumps(envelope.__dict__)
-        await self.websocket.send(message)
+        await self.websocket.send(json.dumps({"type": envelope.type, "data": envelope.data}))
 
     async def send_message(
         self,
         chat_id: int,
         content: str,
         reply_to: Optional[int] = None,
-        attachment_ids: Optional[List[int]] = None,
+        media: Optional[List[MessageMedia]] = None,
     ):
         """Send a message."""
-        envelope = WsEnvelope(
-            type="send_message",
-            data={
-                "chat_id": chat_id,
-                "content": content,
-                "reply_to": reply_to,
-                "attachment_ids": attachment_ids,
-            },
-        )
-        await self._send_raw(envelope)
+        data = {
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "media": media,
+        }
+        await self._send_raw(WsEnvelope(type="send_message", data=data))
 
     async def edit_message(self, message_id: int, content: str):
         """Edit a message."""
-        envelope = WsEnvelope(
-            type="edit_message",
-            data={"message_id": message_id, "content": content},
-        )
-        await self._send_raw(envelope)
+        await self._send_raw(WsEnvelope(type="edit_message", data={"message_id": message_id, "content": content}))
 
     async def delete_message(self, message_id: int):
         """Delete a message."""
-        envelope = WsEnvelope(
-            type="delete_message",
-            data={"message_id": message_id},
-        )
-        await self._send_raw(envelope)
+        await self._send_raw(WsEnvelope(type="delete_message", data={"message_id": message_id}))
 
     async def add_reaction(self, message_id: int, emoji: str):
         """Add a reaction to a message."""
-        envelope = WsEnvelope(
-            type="add_reaction",
-            data={"message_id": message_id, "emoji": emoji},
-        )
-        await self._send_raw(envelope)
+        await self._send_raw(WsEnvelope(type="add_reaction", data={"message_id": message_id, "emoji": emoji}))
 
     async def remove_reaction(self, message_id: int, emoji: str):
         """Remove a reaction from a message."""
-        envelope = WsEnvelope(
-            type="remove_reaction",
-            data={"message_id": message_id, "emoji": emoji},
-        )
-        await self._send_raw(envelope)
+        await self._send_raw(WsEnvelope(type="remove_reaction", data={"message_id": message_id, "emoji": emoji}))
 
     async def set_typing(self, chat_id: int, is_typing: bool = True):
         """Set typing status."""
@@ -307,34 +261,25 @@ class WebSocketClient:
 
     async def get_online_list(self) -> List[Dict[str, int]]:
         """Get the list of online users."""
-        request_id = str(uuid.uuid4())
+        req_id = str(uuid.uuid4())
         future = asyncio.Future()
-        self._pending_requests[request_id] = future
-        
+        self._pending_requests[req_id] = future
         try:
-            envelope = WsEnvelope(
-                type="get_online_list",
-                data={"request_id": request_id}
-            )
-            await self._send_raw(envelope)
-            
+            await self._send_raw(WsEnvelope(type="get_online_list", data={"request_id": req_id}))
             return await asyncio.wait_for(future, timeout=5.0)
         except asyncio.TimeoutError:
-            if request_id in self._pending_requests:
-                del self._pending_requests[request_id]
+            self._pending_requests.pop(req_id, None)
             raise Exception("Timed out waiting for online list")
-        except Exception as e:
-            if request_id in self._pending_requests:
-                del self._pending_requests[request_id]
+        except Exception:
+            self._pending_requests.pop(req_id, None)
             raise
 
     async def disconnect(self):
         """Disconnect from the WebSocket."""
-        for request_id, future in self._pending_requests.items():
-            if not future.done():
-                future.set_exception(Exception("Disconnected"))
+        for req_id, fut in self._pending_requests.items():
+            if not fut.done():
+                fut.set_exception(Exception("Disconnected"))
         self._pending_requests.clear()
-        
         if self.websocket:
             try:
                 await self.websocket.close()

@@ -1,8 +1,15 @@
 from abc import ABC
 from typing import TYPE_CHECKING, List, Optional, Union
-from dataclasses import dataclass
 
-from .types import UserPublic, Message, Chat, ChatPreview, ChatMember, MessageAttachment
+from .types import (
+    UserPublic,
+    Message,
+    Chat,
+    ChatPreview,
+    ChatMember,
+    MessageMedia,
+    MessageReaction,
+)
 
 if TYPE_CHECKING:
     from .client import PigeonClient
@@ -52,6 +59,16 @@ class MessageEntity(BaseEntity):
         """Get the ID of the message this reply is to."""
         return self._data.reply_to_message_id
 
+    @property
+    def media(self) -> Optional[List[MessageMedia]]:
+        """Get the message media."""
+        return self._data.media
+
+    @property
+    def reactions(self) -> Optional[List[MessageReaction]]:
+        """Get the message reactions."""
+        return self._data.reactions
+
     async def edit(self, content: str) -> None:
         """Edit the message content."""
         await self.client.edit_message(self.id, content)
@@ -71,12 +88,10 @@ class MessageEntity(BaseEntity):
         await self.client.remove_reaction(self.id, emoji)
 
     async def reply(
-        self, content: str, attachment_ids: Optional[List[int]] = None
+        self, content: str, media: Optional[List[MessageMedia]] = None
     ) -> None:
         """Reply to this message."""
-        await self.client.send_message(
-            self.chat_id, content, self.id, attachment_ids
-        )
+        await self.client.send_message(self.chat_id, content, self.id, media)
 
 
 class UserEntity(BaseEntity):
@@ -98,8 +113,8 @@ class UserEntity(BaseEntity):
 
     async def fetch(self) -> "UserEntity":
         """Fetch fresh user data from the API."""
-        fresh_data = await self.client.get_user(self.id)
-        self._data = fresh_data
+        fresh = await self.client.get_user(self.id)
+        self._data = fresh
         return self
 
 
@@ -122,8 +137,8 @@ class ChatEntity(BaseEntity):
 
     async def fetch_full(self) -> "ChatEntity":
         """Fetch full chat data from the API."""
-        chat_data = await self.client.get_chat(self.id)
-        self._data = chat_data
+        chat = await self.client.get_chat(self.id)
+        self._data = chat
         return self
 
     async def fetch_members(self) -> List[ChatMember]:
@@ -138,7 +153,6 @@ class ChatEntity(BaseEntity):
     ) -> List[Message]:
         """Fetch messages from the chat."""
         from .http import GetMessagesQuery
-        
         query = GetMessagesQuery(limit=limit, before_id=before_id, after_id=after_id)
         return await self.client.get_messages(self.id, query)
 
@@ -146,15 +160,15 @@ class ChatEntity(BaseEntity):
         self,
         content: str,
         reply_to: Optional[int] = None,
-        attachment_ids: Optional[List[int]] = None,
+        media: Optional[List[MessageMedia]] = None,
     ) -> None:
         """Send a message to the chat."""
-        await self.client.send_message(self.id, content, reply_to, attachment_ids)
+        await self.client.send_message(self.id, content, reply_to, media)
 
     async def remove_member(self, user_id: int) -> None:
         """Remove a member from the chat."""
         await self.client.remove_member(self.id, user_id)
 
-    async def upload_attachment(self, form_data) -> MessageAttachment:
-        """Upload an attachment to the chat."""
-        return await self.client.upload_attachment(self.id, form_data)
+    async def upload_media(self, form_data) -> MessageMedia:
+        """Upload a media."""
+        return await self.client.upload_media(self.id, form_data)
